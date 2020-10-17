@@ -13,6 +13,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Text;
@@ -76,7 +77,8 @@ namespace OpenHardwareMonitor.Utilities {
     public Boolean StopHTTPListener() {
       if (PlatformNotSupported)
         return false;
-
+      if (listenerThread is null)
+        return true;
       try {
         listenerThread.Abort();
         listener.Stop();
@@ -116,6 +118,10 @@ namespace OpenHardwareMonitor.Utilities {
       var requestedFile = request.RawUrl.Substring(1);
       if (requestedFile == "data.json") {
         SendJSON(context.Response);
+        return;
+      }
+      if (requestedFile == "sensors.json") {
+        SendFlatJSON(context.Response);
         return;
       }
 
@@ -233,7 +239,57 @@ namespace OpenHardwareMonitor.Utilities {
 
       response.Close();
     }
+    private void SendFlatJSON(HttpListenerResponse response) {
+      StringBuilder JSON = new StringBuilder("{\"host\": \"" + root.Text + "\", \"sensors\": [");
+      int initLength = JSON.Length;
+      JSON.Append(GenerateFlatJSON(root, "", ""));
+      if (JSON.Length > initLength + 2)
+        JSON.Remove(JSON.Length - 2, 1); //Remove the last comma in array
+      JSON.Append("]}");
 
+      byte[] buffer = Encoding.UTF8.GetBytes(JSON.ToString());
+
+      response.AddHeader("Cache-Control", "no-cache");
+
+      response.ContentLength64 = buffer.Length;
+      response.ContentType = "application/json";
+
+      try {
+        Stream output = response.OutputStream;
+        output.Write(buffer, 0, buffer.Length);
+        output.Close();
+      } catch (HttpListenerException) {
+      }
+
+      response.Close();
+    }
+
+    private string GenerateFlatJSON(Node n, string name, string type) {
+      StringBuilder JSON = new StringBuilder();
+      n.Nodes
+        .Where(x => x.Nodes.Count > 0)
+        .ToList()
+        .ForEach(x => {
+          if (string.IsNullOrEmpty(name))
+            JSON.Append(GenerateFlatJSON(x, x.Text, ""));
+          else
+            JSON.Append(GenerateFlatJSON(x, string.IsNullOrEmpty(type) ? name : name + '_' + type, x.Text));
+        });
+      n.Nodes
+        .Where(x => x.Nodes.Count == 0)
+        .OfType<SensorNode>()
+        .ToList()
+        .ForEach(x =>
+        {
+          string[] vs = x.Value.Split(' ');
+          if (!(vs is null) && vs.Length > 1)
+          {
+            JSON.AppendFormat("{{\"node\": \"{0}\", \"type\": \"{1}\", \"name\": \"{2}\", \"value\": {3}, " +
+              "\"units\": \"{4}\"}}, ", name, type, x.Text, vs[0], vs[1]);
+          }
+        });
+      return JSON.ToString();
+    }
     private string GenerateJSON(Node n) {
       string JSON = "{\"id\": " + nodeCount + ", \"Text\": \"" + n.Text 
         + "\", \"Children\": [";
